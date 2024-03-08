@@ -48,6 +48,8 @@ const (
 	fsckErrorsUncorrected = 4
 	// Error thrown by exec cmd.Run() when process spawned by cmd.Start() completes before cmd.Wait() is called (see - k/k issue #103753)
 	errNoChildProcesses = "wait: no child processes"
+	// Error thrown when umount tries to unmount a busy filesystem
+	errDeviceOrResourceBusy = "exit status 32"
 )
 
 // Mounter provides the default implementation of mount.Interface
@@ -302,6 +304,13 @@ func (mounter *Mounter) Unmount(target string) error {
 			}
 			// Rewrite err with the actual exit error of the process.
 			err = &exec.ExitError{ProcessState: command.ProcessState}
+		} else if err.Error() == errDeviceOrResourceBusy {
+			// retry umount with "-l" when the target is busy
+			klog.V(4).Infof("umount target %s was busy. Will retry as lazy umount.", target)
+			err = lazyUmount(target)
+			if err != nil {
+				return fmt.Errorf("lazy unmount failed: %v\nUnmounting arguments: %s\nOutput: %s", err, target, string(output))
+			}
 		}
 		return fmt.Errorf("unmount failed: %v\nUnmounting arguments: %s\nOutput: %s", err, target, string(output))
 	}
@@ -664,6 +673,16 @@ func forceUmount(path string) error {
 
 	if cmderr != nil {
 		return fmt.Errorf("unmount failed: %v\nUnmounting arguments: %s\nOutput: %s", cmderr, path, string(out))
+	}
+	return nil
+}
+
+func lazyUmount(path string) error {
+	cmd := exec.Command("umount", "-l", path)
+	out, cmderr := cmd.CombinedOutput()
+
+	if cmderr != nil {
+		return fmt.Errorf("lazy unmount failed: %v\nUnmounting arguments: %s\nOutput: %s", cmderr, path, string(out))
 	}
 	return nil
 }
